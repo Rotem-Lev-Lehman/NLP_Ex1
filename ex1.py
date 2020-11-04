@@ -27,6 +27,8 @@ class Ngram_Language_Model:
         self.all_contexts = None  # this list will hold all of the contexts in the text (for choosing the initial context)
         self.all_contexts_probs = None  # this list will hold the probabilities of each context
         self.ngrams_set = None  # this set will hold all unique n-grams in the given text
+        self.sum_contexts = None  # this represents the amount of total contexts in the text
+        self.num2counter_and_sum = None  # this dictionary will map from an amount of grams, to (1) a counter for this amount of grams, and to (2) the amount of the total appearances
 
     def build_model(self, text):  # should be called build_model
         """populates a dictionary counting all ngrams in the specified text.
@@ -36,7 +38,17 @@ class Ngram_Language_Model:
         """
         split_text = self.get_tokens(text)
         all_ngrams = self.get_all_ngrams(split_text, self.n)
+
+        self.num2counter_and_sum = {}
         self.ngram_counter = Counter(all_ngrams)  # count each n-gram and see how many times it occurred in the list.
+        self.num2counter_and_sum[self.n] = self.ngram_counter
+
+        for i in range(1, self.n):
+            # for each amount of grams, get all of the i-grams and put them into the num2counter_and_sum dictionary:
+            all_i_grams = self.get_all_ngrams(split_text, i)
+            curr_counter = Counter(all_i_grams)
+            curr_sum = len(all_i_grams)
+            self.num2counter_and_sum[i] = (curr_counter, curr_sum)
 
         self.grams_set = set(split_text)
 
@@ -61,9 +73,9 @@ class Ngram_Language_Model:
             prob_dist = [possible_grams[k] / total_possibilities for k in possible_grams.keys()]
             self.next_gram_choosing_dict[context] = (only_grams, prob_dist)
 
-        sum_contexts = sum(self.context_counter.values())
+        self.sum_contexts = sum(self.context_counter.values())
         self.all_contexts = [k for (k, v) in self.context_counter.items()]
-        self.all_contexts_probs = [v / sum_contexts for (k, v) in self.context_counter.items()]
+        self.all_contexts_probs = [v / self.sum_contexts for (k, v) in self.context_counter.items()]
 
     def get_tokens(self, text):
         """Returns a list of tokens from the given text.
@@ -126,7 +138,7 @@ class Ngram_Language_Model:
             sentence_grams.append(gram)
 
         if len(curr_context_list) > self.n - 1:
-            curr_context_list = curr_context_list[(len(curr_context_list) - self.n - 1):]  # if the context is longer than n-1, only proceed with the last n-1 words in the context.
+            curr_context_list = curr_context_list[(len(curr_context_list) - self.n + 1):]  # if the context is longer than n-1, only proceed with the last n-1 words in the context.
             curr_context = " ".join(curr_context_list)
 
         if curr_context not in self.ngram_dictionary.keys():
@@ -145,9 +157,10 @@ class Ngram_Language_Model:
             sentence_grams.append(next_gram)
 
             # fix current context:
-            del curr_context_list[0]
-            curr_context_list.append(next_gram)
-            curr_context = " ".join(curr_context_list)
+            if self.n > 1:  # fix only if there is a point to doing so, if it is a model without contexts, than we do not need to fix it...
+                del curr_context_list[0]
+                curr_context_list.append(next_gram)
+                curr_context = " ".join(curr_context_list)
 
         return " ".join(sentence_grams)  # create a string from the list of the grams in the sentence
 
@@ -189,7 +202,39 @@ class Ngram_Language_Model:
         probability = 0
         for ngram in all_ngrams:  # log(p1 * p2 * ... * pn) is equal to: log(p1) + log(p2) + ... + log(pn)
             probability += math.log(self.get_prob(ngram))  # send the n-gram to a function that gets it's probability (or smoothed probability if it does not exist...)
+        probability += self.get_log_prob_context(split_text[:self.n - 1])
         return probability
+
+    def get_log_prob_context(self, context_list):
+        """Returns the probability of the specified context.
+        If the context exists in the context set, than use the regular probability, else, smooth it's probability.
+
+            Args:
+                context_list (list): the context to have it's probability
+
+            Returns:
+                float. The probability.
+        """
+        log_prob = 0
+        prev_context = ''
+        for i in range(1, len(context_list) + 1):
+            curr_context = " ".join(context_list[:i])
+            curr_counter, curr_sum = self.num2counter_and_sum[i]
+            prev_amount_of_possibilities = curr_sum
+            if i > 1:
+                prev_counter, _ = self.num2counter_and_sum[i-1]
+                if prev_context in prev_counter.keys():
+                    prev_amount_of_possibilities = prev_counter[prev_context]
+
+            if curr_context in curr_counter.keys():
+                # The context exists in the text:
+                log_prob += math.log(curr_counter[curr_context] / prev_amount_of_possibilities)
+            else:
+                # The context does not exist in the text, so we need to smooth it:
+                V = len(self.grams_set)  # number of unique words (grams) in the text - vocabulary's size.
+                log_prob += math.log(1.0 / V)
+            prev_context = curr_context
+        return log_prob
 
     def get_prob(self, ngram):
         """Returns the probability of the specified ngram.
